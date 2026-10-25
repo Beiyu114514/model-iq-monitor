@@ -1,0 +1,4 @@
+node_modules/
+monitor.log
+nohup.out
+data/checks.jsonl

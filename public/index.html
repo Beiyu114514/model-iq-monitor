@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="定时检测模型接口是否降智的状态面板，含 24 小时 / 3 天热力图与检测日志。">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#faf9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#141413" media="(prefers-color-scheme: dark)">
+<title>模型状态监测</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2347730c'/%3E%3Ccircle cx='16' cy='16' r='6' fill='%23faf9f7'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #faf9f7; --surface: #ffffff; --surface-2: #f5f3f0;
+    --ink: #1a1a18; --muted: #6f6862; --border: #e7e4de;
+    --ok: #47730c;   --ok-soft: #edf5e1;
+    --warn: #b8860b; --warn-soft: #fdf6e3;
+    --bad: #c0392b;  --bad-soft: #fdecea;
+    --info: #1d4ed8; --info-soft: #e8effd;
+    --heat-none: #eceae7;
+    --accent: #b5532f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --surface: #1d1c1a; --surface-2: #262522;
+      --ink: #f5f3ef; --muted: #a8a29a; --border: #36332e;
+      --ok: #8fbc4a;   --ok-soft: #1e2a12;
+      --warn: #e0b53c; --warn-soft: #2e2611;
+      --bad: #e06c5f;  --bad-soft: #331b18;
+      --info: #6d9eff; --info-soft: #16233d;
+      --heat-none: #2a2825;
+      --accent: #e79275;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { font-size: 100%; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    font-size: 0.9375rem; line-height: 1.5;
+    background: var(--bg); color: var(--ink); padding: 2rem 1.25rem; max-width: 900px; margin: 0 auto;
+  }
+  h1 { font-size: 1.375rem; line-height: 1.3; font-weight: 600; margin-bottom: 0.25rem; }
+  .sub { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; color: var(--muted); font-size: 0.8125rem; margin-bottom: 1.5rem; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(11.25rem, 1fr)); gap: 0.75rem; margin-bottom: 1.75rem; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1rem; }
+  .card .label { font-size: 0.75rem; color: var(--muted); margin-bottom: 0.375rem; }
+  .card .value { font-size: 1.5rem; line-height: 1.25; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .card .value.small { font-size: 1.0625rem; }
+  .badge { display: inline-block; padding: 0.125rem 0.625rem; border-radius: 62.4375rem; font-size: 0.75rem; font-weight: 500; white-space: nowrap; }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); }
+  .badge.bad { background: var(--bad-soft); color: var(--bad); }
+  .badge.info { background: var(--info-soft); color: var(--info); }
+  .section-title { font-size: 0.9375rem; font-weight: 600; margin: 1.625rem 0 0.625rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+  .history-card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1rem 1.125rem 0.875rem; margin-top: 0.625rem; }
+  .history-head { display: flex; justify-content: space-between; gap: 1rem; font-size: 0.6875rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .history-head #granularity { letter-spacing: 0; text-transform: none; }
+  .bars { display: flex; align-items: flex-end; gap: clamp(1px, 0.18vw, 3px); height: 4rem; margin: 0.875rem 0 0.5rem; }
+  .bar { appearance: none; border: 0; padding: 0; flex: 1 1 0; min-width: 0; height: 100%; border-radius: 1px; background: var(--heat-none); cursor: pointer; transition: opacity 0.12s ease; }
+  .bar:hover { opacity: 0.75; }
+  .bar:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; position: relative; z-index: 1; }
+  .bar.ok { background: var(--ok); }
+  .bar.warn { background: var(--warn); }
+  .bar.bad { background: var(--bad); }
+  .bar.info { background: var(--info); }
+  .bar.none { background: var(--heat-none); }
+  .axis { display: flex; justify-content: space-between; font-size: 0.6875rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+  .legend { display: flex; gap: 0.875rem; flex-wrap: wrap; font-size: 0.75rem; color: var(--muted); margin-top: 0.875rem; padding-top: 0.75rem; border-top: 1px solid var(--border); align-items: center; }
+  .legend .sw { display: inline-block; width: 0.25rem; height: 0.75rem; border-radius: 1px; margin-right: 0.375rem; vertical-align: -2px; }
+  .sw.ok { background: var(--ok); } .sw.warn { background: var(--warn); }
+  .sw.bad { background: var(--bad); } .sw.info { background: var(--info); }
+  .sw.none { background: var(--heat-none); border: 1px solid var(--border); }
+  .detail { font-size: 0.8125rem; color: var(--muted); margin: 0.5rem 0 0; min-height: 1.125rem; }
+  .detail strong { color: var(--ink); font-weight: 500; }
+  .table-wrap { border: 1px solid var(--border); border-radius: 0.75rem; overflow: auto; background: var(--surface); scrollbar-width: thin; max-height: 24rem; }
+  .table-wrap thead th { position: sticky; top: 0; z-index: 1; }
+  table { width: 100%; min-width: 40rem; border-collapse: collapse; font-size: 0.8125rem; }
+  caption { text-align: left; }
+  th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  th { color: var(--muted); font-weight: 500; background: var(--surface-2); white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+  .qid, .latency, .time { white-space: nowrap; }
+  .answer { display: inline-block; max-width: 21rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  .err-text { display: inline-block; max-width: 21rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; color: var(--bad); }
+  .rid { display: inline-block; max-width: 11rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+  .tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 0.5rem; overflow: hidden; }
+  .tabs button { appearance: none; border: 0; background: var(--surface); color: var(--ink); padding: 0.25rem 0.875rem; font-size: 0.75rem; cursor: pointer; }
+  .tabs button + button { border-left: 1px solid var(--border); }
+  .tabs button.active { background: var(--ink); color: var(--bg); }
+  .btn { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink); border-radius: 0.5rem; padding: 0.375rem 1rem; font-size: 0.8125rem; cursor: pointer; }
+  .btn-sm { padding: 0.125rem 0.625rem; font-size: 0.75rem; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:focus-visible, .tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; z-index: 1; }
+  .table-wrap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.625rem; flex-wrap: wrap; gap: 0.5rem; font-size: 0.75rem; color: var(--muted); }
+  .conn { display: inline-flex; align-items: center; gap: 0.3125rem; }
+  .conn::before { content: ""; width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--ok); }
+  .conn.error { color: var(--bad); }
+  .conn.error::before { background: var(--bad); }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  @media (max-width: 40rem) {
+    body { padding: 1.25rem 0.875rem; }
+    .cards { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; animation: none !important; }
+    .bar:hover { opacity: 1; }
+  }
+</style>
+</head>
+<body>
+<h1>模型状态监测</h1>
+<div class="sub">
+  <span>每 <span id="interval">1</span> 分钟检测 · 保留 <span id="retention">7</span> 天</span>
+  <button type="button" class="btn btn-sm" id="manual-check">立即检测</button>
+  <span class="conn" id="conn" aria-live="polite">连接正常</span>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="label">最近状态</div><div class="value" id="last-state" aria-live="polite">—</div></div>
+  <div class="card"><div class="label">24 小时不降智率</div><div class="value" id="rate">—</div></div>
+  <div class="card"><div class="label">平均响应</div><div class="value" id="latency">—</div></div>
+  <div class="card"><div class="label">最近检测 · 本地时间</div><div class="value small" id="last-time">—</div></div>
+</div>
+
+<div class="section-title">
+  <span id="history-title">历史状态</span>
+  <span class="tabs" role="group" aria-label="时间范围">
+    <button type="button" class="active" data-range="24h" aria-pressed="true">24 小时</button>
+    <button type="button" data-range="3d" aria-pressed="false">3 天</button>
+  </span>
+</div>
+<div class="history-card">
+  <div class="history-head">
+    <span>History (60pts)</span>
+    <span id="granularity">每格 24 分钟</span>
+  </div>
+  <div class="bars" id="bars" role="group" aria-label="历史状态条状图"></div>
+  <div class="axis"><span>过去</span><span>现在</span></div>
+  <div class="detail" id="detail">点击或聚焦一根条查看明细</div>
+  <div class="legend">
+    <span><span class="sw ok" aria-hidden="true"></span>纯不降智</span>
+    <span><span class="sw warn" aria-hidden="true"></span>有降有不降</span>
+    <span><span class="sw bad" aria-hidden="true"></span>纯降智</span>
+    <span><span class="sw info" aria-hidden="true"></span>含异常</span>
+    <span><span class="sw none" aria-hidden="true"></span>无数据</span>
+  </div>
+</div>
+
+<div class="section-title">检测日志</div>
+<div class="toolbar"><span>最近 60 条 · 每 30 秒自动刷新</span></div>
+<div class="table-wrap" role="region" aria-label="检测日志" tabindex="0" id="logs-wrap">
+  <table>
+    <caption class="sr-only">最近 60 条检测记录</caption>
+    <thead><tr><th scope="col">时间</th><th scope="col">问题</th><th scope="col">状态</th><th scope="col">回答 / 异常</th><th scope="col">耗时</th><th scope="col">请求 ID</th></tr></thead>
+    <tbody id="logs"></tbody>
+  </table>
+</div>
+<noscript><p style="margin-top:1rem;color:var(--muted)">此面板需要启用 JavaScript 才能显示数据。</p></noscript>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const isToday = (ts) => new Date(ts).toDateString() === new Date().toDateString();
+const fmtTs = (ts) => isToday(ts)
+  ? new Date(ts).toLocaleTimeString("zh-CN", { hour12: false })
+  : new Date(ts).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+const fmtFull = (ts) => new Date(ts).toLocaleString("zh-CN", { hour12: false });
+
+async function getJSON(url) {
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+function setConn(ok, text) {
+  const el = $("conn");
+  el.textContent = text;
+  el.classList.toggle("error", !ok);
+}
+
+async function refreshSummary() {
+  const s = await getJSON("/api/summary");
+  $("rate").textContent = s.rate24h === null ? "—" : s.rate24h + "%";
+  $("latency").textContent = s.avgLatency === null ? "—" : (s.avgLatency / 1000).toFixed(1) + "s";
+  if (s.lastCheck) {
+    const l = s.lastCheck;
+    $("last-time").textContent = fmtFull(l.ts);
+    const el = $("last-state");
+    if (l.hit === null || l.hit === undefined) el.innerHTML = '<span class="badge info">请求异常</span>';
+    else if (l.hit) el.innerHTML = '<span class="badge ok">不降智</span>';
+    else el.innerHTML = '<span class="badge bad">降智</span>';
+  }
+}
+
+let range = "24h";
+let historySig = "";
+let logsSig = "";
+const POINTS = 60;
+
+function updateGranularity() {
+  $("granularity").textContent = range === "3d" ? "每格 72 分钟" : "每格 24 分钟";
+}
+
+document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".tabs button").forEach((x) => {
+    const on = x === b;
+    x.classList.toggle("active", on);
+    x.setAttribute("aria-pressed", String(on));
+  });
+  range = b.dataset.range;
+  updateGranularity();
+  historySig = "";
+  refreshHistory().catch(onRefreshError);
+}));
+
+function describeCell(c) {
+  if (!c || c.hits + c.misses + c.errors === 0) return "该时段无数据";
+  return `${fmtFull(c.ts)}，命中 ${c.hits} 次，降智 ${c.misses} 次，异常 ${c.errors} 次`;
+}
+
+function showDetail(c) {
+  $("detail").textContent = describeCell(c);
+}
+
+async function refreshHistory() {
+  const cells = await getJSON(`/api/history?range=${range}&points=${POINTS}`);
+  const sig = JSON.stringify(cells);
+  if (sig === historySig) return;
+  historySig = sig;
+
+  const bars = $("bars");
+  const prevFocus = bars.contains(document.activeElement) ? [...bars.children].indexOf(document.activeElement) : -1;
+  const frag = document.createDocumentFragment();
+  cells.forEach((c, i) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "bar";
+    if (c.hits + c.misses + c.errors === 0) btn.classList.add("none");
+    else if (c.errors > 0) btn.classList.add("info");
+    else if (c.hits > 0 && c.misses === 0) btn.classList.add("ok");
+    else if (c.hits === 0 && c.misses > 0) btn.classList.add("bad");
+    else btn.classList.add("warn");
+    btn.tabIndex = i === 0 ? 0 : -1;
+    btn.setAttribute("aria-label", describeCell(c));
+    btn.title = describeCell(c);
+    btn.addEventListener("click", () => showDetail(c));
+    frag.appendChild(btn);
+  });
+  bars.replaceChildren(frag);
+  if (prevFocus >= 0) {
+    const all = [...bars.children];
+    const target = all[Math.min(prevFocus, all.length - 1)];
+    if (target) {
+      all.forEach((c) => (c.tabIndex = -1));
+      target.tabIndex = 0;
+      target.focus({ preventScroll: true });
+    }
+  }
+}
+
+$("bars").addEventListener("keydown", (e) => {
+  const bars = [...$("bars").children];
+  const i = bars.indexOf(document.activeElement);
+  if (i < 0) return;
+  let next = null;
+  if (e.key === "ArrowRight") next = i + 1;
+  else if (e.key === "ArrowLeft") next = i - 1;
+  else if (e.key === "Home") next = 0;
+  else if (e.key === "End") next = bars.length - 1;
+  if (next === null) return;
+  const target = bars[next];
+  if (!target) return;
+  e.preventDefault();
+  bars.forEach((c) => (c.tabIndex = -1));
+  target.tabIndex = 0;
+  target.focus();
+});
+
+async function refreshLogs() {
+  const logs = await getJSON("/api/logs?limit=60");
+  const sig = JSON.stringify(logs);
+  if (sig === logsSig) return;
+  logsSig = sig;
+
+  const wrap = $("logs-wrap");
+  // 内容更新后保持在原滚动位置（表头 sticky，用 scrollTop 相对底部更稳）
+  const nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 40;
+  const prevTop = wrap.scrollTop;
+
+  $("logs").innerHTML = logs.map((r) => {
+    const st = r.hit === null || r.hit === undefined
+      ? '<span class="badge info">异常</span>'
+      : r.hit ? '<span class="badge ok">命中</span>' : '<span class="badge bad">降智</span>';
+    const ans = r.error
+      ? `<span class="err-text" title="${esc(r.error)}">${esc(r.error.length > 60 ? r.error.slice(0, 60) + "…" : r.error)}</span>`
+      : `<span class="answer" title="${esc(r.answer)}">${esc(r.answer || "—")}</span>`;
+    return `<tr><td class="mono time" title="${esc(fmtFull(r.ts))}">${esc(fmtTs(r.ts))}</td><td class="qid">${esc(r.questionId)}</td><td>${st}</td><td>${ans}</td><td class="mono latency">${r.latencyMs ?? "—"} ms</td><td class="mono"><span class="rid" title="${esc(r.requestId)}">${esc(r.requestId || "—")}</span></td></tr>`;
+  }).join("") || '<tr><td colspan="6" style="color:var(--muted)">等待首次检测</td></tr>';
+
+  // 已滚到底部则继续贴底；否则维持原位置，避免 30 秒刷新打断阅读
+  wrap.scrollTop = nearBottom ? wrap.scrollHeight : prevTop;
+}
+
+function onRefreshError(err) {
+  setConn(false, "刷新失败：" + (err.message || "网络错误"));
+  console.error(err);
+}
+
+async function refreshAll() {
+  try {
+    await Promise.all([refreshSummary(), refreshHistory(), refreshLogs()]);
+    setConn(true, "连接正常");
+  } catch (err) {
+    onRefreshError(err);
+  }
+}
+
+// 手动检测的 token：优先取地址栏 ?token=xxx，其次 localStorage（首次带 token 访问时记住）
+const checkToken = new URLSearchParams(location.search).get("token") || localStorage.getItem("iq-token") || "";
+if (new URLSearchParams(location.search).get("token")) localStorage.setItem("iq-token", checkToken);
+
+$("manual-check").addEventListener("click", async () => {
+  try {
+    const res = await fetch("/api/check", { method: "POST", headers: checkToken ? { "x-check-token": checkToken } : {} });
+    if (res.status === 403) throw new Error("token 无效");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json().catch(() => ({}));
+    setConn(true, data.started ? "已触发检测，稍后刷新" : "上一轮仍在进行，稍后自动刷新");
+    setTimeout(refreshAll, 3000);
+  } catch (err) {
+    onRefreshError(err);
+  }
+});
+
+let pollTimer = null;
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+  if (!document.hidden) pollTimer = setInterval(refreshAll, 30000);
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshAll();
+  startPolling();
+});
+
+(async () => {
+  try {
+    const cfg = await getJSON("/api/config");
+    $("interval").textContent = cfg.intervalMinutes;
+    if (cfg.retentionDays) $("retention").textContent = cfg.retentionDays;
+    if (cfg.needToken && !checkToken) {
+      setConn(false, "本站启用了检测令牌，地址栏加 ?token=你的令牌 后可手动触发检测");
+    }
+    await refreshAll();
+  } catch (err) {
+    onRefreshError(err);
+  }
+  startPolling();
+})();
+</script>
+</body>
+</html>

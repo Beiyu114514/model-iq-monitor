@@ -1,0 +1,21 @@
+{
+  "provider": {
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKey": "sk-xxx",
+    "model": "gpt-4o-mini",
+    "timeoutMs": 60000,
+    "maxTokens": 1024,
+    "temperature": 0
+  },
+  "intervalMinutes": 1,
+  "retentionDays": 7,
+  "port": 8787,
+  "questions": [
+    {
+      "id": "jp-pm",
+      "question": "日本现任首相是谁？只回答名字。",
+      "answerKeywords": ["高市早苗"],
+      "enabled": true
+    }
+  ]
+}
