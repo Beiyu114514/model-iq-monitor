@@ -327,7 +327,8 @@ $("manual-check").addEventListener("click", async () => {
     if (res.status === 403) throw new Error("token 无效");
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json().catch(() => ({}));
-    setConn(true, data.started ? "已触发检测，稍后刷新" : "上一轮仍在进行，稍后自动刷新");
+    if (data.demo) setConn(true, "演示模式，未触发真实检测");
+    else setConn(true, data.started ? "已触发检测，稍后刷新" : "上一轮仍在进行，稍后自动刷新");
     setTimeout(refreshAll, 3000);
   } catch (err) {
     onRefreshError(err);

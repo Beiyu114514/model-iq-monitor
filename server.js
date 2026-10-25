@@ -59,6 +59,9 @@ function summary(records) {
 
 // ---------- 调度 ----------
 let running = false;
+function isRunning() {
+  return running;
+}
 async function tick() {
   if (running) return false;
   running = true;
@@ -119,7 +122,7 @@ function handle(req, res) {
   if (p === "/api/summary") return json(res, summary(readRecords()));
   if (p === "/api/history") {
     const range = url.searchParams.get("range") === "3d" ? 3 * 86400_000 : 86400_000;
-    const points = Math.min(Math.max(+url.searchParams.get("points") || 0, 0), 500);
+    const points = Math.floor(Math.min(Math.max(+url.searchParams.get("points") || 0, 0), 500));
     const records = readRecords();
     return json(res, points > 0 ? windowize(records, range, points) : bucketize(records, range));
   }
@@ -144,8 +147,9 @@ function handle(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "invalid token" }));
     }
     if (process.env.DISABLE_SCHEDULER === "1") return json(res, { ok: true, demo: true });
-    // 上轮还没跑完时如实告知，而不是假装已排队
-    const started = tick();
+    // tick 是 async 的，调用返回的是 Promise；用同步守卫判断是否真的开始
+    const started = !isRunning();
+    tick();
     return json(res, { ok: true, queued: true, started });
   }
   // 静态页
