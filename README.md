@@ -18,6 +18,10 @@
   "retentionDays": 7,
   "port": 8787,
   "checkToken": "",
+  "models": [
+    { "id": "主力", "model": "gpt-4o", "enabled": true },
+    { "id": "备用中转", "model": "claude-3-5", "baseUrl": "https://另一家中转/v1", "apiKey": "sk-yyy", "enabled": true }
+  ],
   "questions": [
     {
       "id": "jp-pm",
@@ -29,7 +33,8 @@
 }
 ```
 
-- **出题**：往 `questions` 加条目即可，`answerKeywords` 是命中关键词数组（回答包含任意一个即算不降智），改完不用重启。
+- **出题**：往 `questions` 加条目即可（或用后台 `/admin` 在线编辑），`answerKeywords` 是命中关键词数组（回答包含任意一个即算不降智），改完不用重启。
+- **多模型**：`models` 数组支持自定义检测模型，每个可单独覆盖 `baseUrl` / `apiKey`（留空用通用 provider），每轮对「启用问题 × 启用模型」全组合检测。未配置 `models` 时沿用 `provider.model` 单模型。
 - 多个问题会每轮依次全部检测；历史区显示 60 根状态条（24 小时视图每根 24 分钟，3 天视图每根 72 分钟）。
 - `intervalMinutes` 同样支持热更新，改完不用重启。
 - **公网部署**：给 `checkToken` 设一个随机字符串，`POST /api/check` 需要带 `?token=xxx`（或 `x-check-token` 头）才会执行，防止别人刷你的 API 额度。面板地址栏加 `?token=xxx` 会自动记住。

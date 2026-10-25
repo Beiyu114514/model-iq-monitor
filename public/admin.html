@@ -89,6 +89,15 @@
     </div>
 
     <div class="card">
+      <h2>检测模型</h2>
+      <p style="font-size:0.75rem;color:var(--muted);margin-bottom:0.75rem">
+        每轮对「启用的问题 × 启用的模型」全组合检测。baseUrl / API Key 留空则使用上方通用 provider 的值。
+      </p>
+      <div id="models"></div>
+      <button type="button" class="btn btn-sm" id="add-m">+ 添加模型</button>
+    </div>
+
+    <div class="card">
       <h2>调度与保留</h2>
       <div class="row">
         <fieldset>
@@ -185,6 +194,53 @@ $("add-q").addEventListener("click", () => {
   el.querySelector(".q-id").focus();
 });
 
+// ---------- 模型编辑 ----------
+function mField(m, i) {
+  return `<div class="q-item m-item" data-i="${i}">
+    <div class="q-head"><span class="title">模型 ${i + 1}</span><button type="button" class="del-m">删除</button></div>
+    <div class="row">
+      <fieldset><label>显示名 ID（留空 = 模型名）</label><input type="text" class="m-id" value="${esc(m.id)}"></fieldset>
+      <fieldset><label>模型名称 *</label><input type="text" class="m-model" value="${esc(m.model)}" required></fieldset>
+    </div>
+    <div class="row">
+      <fieldset><label>Base URL（留空 = 通用）</label><input type="text" class="m-base" value="${esc(m.baseUrl || "")}" placeholder="https://中转站/v1"></fieldset>
+      <fieldset><label>API Key（留空 = 通用）</label><input type="password" class="m-key" value="${esc(m.apiKey || "")}" autocomplete="new-password"></fieldset>
+    </div>
+    <div class="check-line"><input type="checkbox" class="m-enabled" ${m.enabled !== false ? "checked" : ""} id="men-${i}"><label for="men-${i}" style="margin:0">启用</label></div>
+  </div>`;
+}
+
+function bindModelDelete(el) {
+  el.querySelector(".del-m").addEventListener("click", (e) => {
+    if (!confirm("确定删除这个模型？")) return;
+    e.target.closest(".m-item").remove();
+  });
+}
+
+function renderModels(models) {
+  $("models").innerHTML = (models || []).map(mField).join("");
+  document.querySelectorAll(".m-item").forEach(bindModelDelete);
+}
+
+function collectModels() {
+  return [...document.querySelectorAll(".m-item")].map((el) => ({
+    id: el.querySelector(".m-id").value.trim(),
+    model: el.querySelector(".m-model").value.trim(),
+    baseUrl: el.querySelector(".m-base").value.trim(),
+    apiKey: el.querySelector(".m-key").value.trim(),
+    enabled: el.querySelector(".m-enabled").checked,
+  }));
+}
+
+$("add-m").addEventListener("click", () => {
+  const div = document.createElement("div");
+  div.innerHTML = mField({ id: "", model: "", enabled: true }, document.querySelectorAll(".m-item").length);
+  const el = div.firstElementChild;
+  $("models").appendChild(el);
+  bindModelDelete(el);
+  el.querySelector(".m-model").focus();
+});
+
 // ---------- 加载 / 保存 ----------
 let loaded = null;
 
@@ -192,6 +248,7 @@ async function loadConfig() {
   const cfg = await api("/api/admin/config");
   loaded = cfg;
   renderQuestions(cfg.questions || []);
+  renderModels(cfg.models || []);
   $("interval").value = cfg.intervalMinutes ?? 1;
   $("retention").value = cfg.retentionDays ?? 7;
   $("check-token").value = cfg.checkToken || "";
@@ -207,9 +264,14 @@ $("form").addEventListener("submit", async (e) => {
   if (questions.some((q) => !q.id || !q.question || q.answerKeywords.length === 0)) {
     return setMsg(msg, "有问题缺少 ID / 题目 / 关键词，请补全", false);
   }
+  const models = collectModels().filter((m) => m.model);
+  if (models.length === 0) {
+    return setMsg(msg, "至少需要一个模型", false);
+  }
   const payload = {
     ...loaded,
     questions,
+    models,
     intervalMinutes: +$("interval").value,
     retentionDays: +$("retention").value,
   };

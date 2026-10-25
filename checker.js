@@ -78,61 +78,85 @@ function maybeCompact() {
   }
 }
 
-// 请求一轮所有启用的问题，返回记录数组
+// 模型列表归一化：兼容旧的单模型配置（provider.model）
+function modelsOf(cfg) {
+  const list = Array.isArray(cfg.models) && cfg.models.length
+    ? cfg.models
+    : [{ model: cfg.provider && cfg.provider.model, enabled: true }];
+  return list
+    .filter((m) => m && typeof m.model === "string" && m.model.trim())
+    .map((m, i) => ({
+      id: (typeof m.id === "string" && m.id.trim()) || m.model,
+      model: m.model.trim(),
+      baseUrl: typeof m.baseUrl === "string" && m.baseUrl.trim() ? m.baseUrl.trim() : null,
+      apiKey: typeof m.apiKey === "string" && m.apiKey.trim() ? m.apiKey.trim() : null,
+      enabled: m.enabled !== false,
+    }))
+    .map((m, i, arr) => (arr.findIndex((x) => x.id === m.id) === i ? m : { ...m, id: `${m.id}-${i + 1}` })); // id 去重
+}
+
+// 请求一轮：启用的问题 × 启用的模型
 async function runChecks(cfg) {
   const { provider } = cfg;
   const results = [];
-  for (const q of cfg.questions.filter((q) => q.enabled !== false)) {
-    const rec = {
-      ts: Date.now(),
-      questionId: q.id,
-      question: q.question,
-      answer: null,
-      hit: null, // true/false 命中；null 表示请求异常
-      latencyMs: null,
-      requestId: null,
-      error: null,
-    };
-    const started = Date.now();
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), provider.timeoutMs || 60000);
-    try {
-      const res = await fetch(provider.baseUrl.replace(/\/$/, "") + "/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${provider.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: provider.model,
-          messages: [{ role: "user", content: q.question }],
-          max_tokens: provider.maxTokens ?? 1024,
-          temperature: provider.temperature ?? 0,
-        }),
-        signal: ctrl.signal,
-      });
-      rec.latencyMs = Date.now() - started;
-      rec.requestId = res.headers.get("x-request-id");
-      const body = await res.json().catch(() => null);
-      if (!res.ok) {
-        // 只取 body 里的 message 字段，避免整段 JSON 灌进日志
-        const msg = body?.error?.message || body?.message || "";
-        rec.error = `HTTP ${res.status}${msg ? ": " + String(msg).slice(0, 80) : ""}`;
-      } else {
-        rec.answer = body?.choices?.[0]?.message?.content ?? "";
-        rec.hit = q.answerKeywords.some((k) => rec.answer.includes(k));
+  const models = modelsOf(cfg).filter((m) => m.enabled);
+  if (!models.length) return results;
+  for (const m of models) {
+    const base = (m.baseUrl || provider.baseUrl || "").replace(/\/$/, "");
+    const apiKey = m.apiKey || provider.apiKey;
+    for (const q of cfg.questions.filter((q) => q.enabled !== false)) {
+      const rec = {
+        ts: Date.now(),
+        modelId: m.id,
+        questionId: q.id,
+        question: q.question,
+        answer: null,
+        hit: null, // true/false 命中；null 表示请求异常
+        latencyMs: null,
+        requestId: null,
+        error: null,
+      };
+      const started = Date.now();
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), provider.timeoutMs || 60000);
+      try {
+        const res = await fetch(base + "/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: m.model,
+            messages: [{ role: "user", content: q.question }],
+            max_tokens: provider.maxTokens ?? 1024,
+            temperature: provider.temperature ?? 0,
+          }),
+          signal: ctrl.signal,
+        });
+        rec.latencyMs = Date.now() - started;
+        rec.requestId = res.headers.get("x-request-id");
+        const body = await res.json().catch(() => null);
+        if (!res.ok) {
+          // 只取 body 里的 message 字段，避免整段 JSON 灌进日志
+          const msg = body?.error?.message || body?.message || "";
+          rec.error = `HTTP ${res.status}${msg ? ": " + String(msg).slice(0, 80) : ""}`;
+        } else {
+          rec.answer = body?.choices?.[0]?.message?.content ?? "";
+          rec.hit = q.answerKeywords.some((k) => rec.answer.includes(k));
+        }
+      } catch (e) {
+        rec.latencyMs = Date.now() - started;
+        rec.error = e.name === "AbortError" ? "请求超时" : String(e.message || e);
+      } finally {
+        clearTimeout(timer);
       }
-    } catch (e) {
-      rec.latencyMs = Date.now() - started;
-      rec.error = e.name === "AbortError" ? "请求超时" : String(e.message || e);
-    } finally {
-      clearTimeout(timer);
+      results.push(rec);
+      appendRecord(rec);
     }
-    results.push(rec);
-    appendRecord(rec);
   }
   maybeCompact();
   return results;
 }
 
-module.exports = { loadConfig, runChecks, readRecords };
+module.exports = { loadConfig, runChecks, readRecords, modelsOf };

@@ -2,7 +2,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const { loadConfig, runChecks, readRecords } = require("./checker");
+const { loadConfig, runChecks, readRecords, modelsOf } = require("./checker");
 
 const cfg = loadConfig();
 
@@ -141,6 +141,26 @@ function sanitizeConfig(input) {
   out.retentionDays = rd;
   if (out.checkToken !== undefined && typeof out.checkToken !== "string") return { ok: false, error: "checkToken 需为字符串" };
   if (out.checkToken === "") delete out.checkToken;
+  if (out.adminToken !== undefined && typeof out.adminToken !== "string") return { ok: false, error: "adminToken 需为字符串" };
+  if (out.adminToken === "") delete out.adminToken;
+  if (out.models !== undefined) {
+    if (!Array.isArray(out.models) || out.models.length === 0) return { ok: false, error: "models 不能为空" };
+    const seen = new Set();
+    for (const [i, m] of out.models.entries()) {
+      if (!m || typeof m !== "object") return { ok: false, error: `第 ${i + 1} 个模型格式错误` };
+      if (typeof m.model !== "string" || !m.model.trim()) return { ok: false, error: `第 ${i + 1} 个模型缺少 model 名称` };
+      const id = (typeof m.id === "string" && m.id.trim()) || m.model.trim();
+      if (seen.has(id)) return { ok: false, error: `模型 ID「${id}」重复` };
+      seen.add(id);
+      out.models[i] = {
+        id,
+        model: m.model.trim(),
+        baseUrl: typeof m.baseUrl === "string" ? m.baseUrl.trim() : "",
+        apiKey: typeof m.apiKey === "string" ? m.apiKey.trim() : "",
+        enabled: m.enabled !== false,
+      };
+    }
+  }
   return { ok: true, cfg: out };
 }
 
@@ -170,6 +190,7 @@ function handle(req, res) {
     intervalMinutes: loadConfig().intervalMinutes,
     retentionDays: loadConfig().retentionDays,
     needToken: Boolean(loadConfig().checkToken),
+    models: modelsOf(loadConfig()).filter((m) => m.enabled).map((m) => m.id),
   });
   if (p === "/api/check" && req.method === "POST") { // 手动触发一次
     // 配置了 token 时要求请求带上，避免暴露公网时被人刷真实 API 调用
@@ -197,8 +218,13 @@ function handle(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "未授权" }));
     }
     if (req.method === "GET") {
-      // apiKey 打码后再下发
-      const safe = { ...cfgNow, provider: { ...cfgNow.provider, apiKey: cfgNow.provider?.apiKey ? cfgNow.provider.apiKey.slice(0, 6) + "***" : "" } };
+      // apiKey 打码后再下发（provider 与每个模型）
+      const mask = (k) => (k ? k.slice(0, 6) + "***" : "");
+      const safe = {
+        ...cfgNow,
+        provider: { ...cfgNow.provider, apiKey: mask(cfgNow.provider?.apiKey) },
+        models: (cfgNow.models || []).map((m) => ({ ...m, apiKey: mask(m.apiKey) })),
+      };
       return json(res, safe);
     }
     if (req.method === "PUT") {
@@ -206,9 +232,15 @@ function handle(req, res) {
         let input;
         try { input = JSON.parse(buf); } catch { return json(res, { ok: false, error: "JSON 解析失败" }); }
         const cur = loadConfig();
-        // provider/apiKey 不在前端明文下发，这里合并回写
-        if (input.provider && typeof input.provider.apiKey === "string" && input.provider.apiKey.includes("***")) {
-          input.provider = { ...input.provider, apiKey: cur.provider?.apiKey || "" };
+        const unmask = (sent, real) => (typeof sent === "string" && sent.includes("***") ? real || "" : sent);
+        // apiKey 不在前端明文下发：打码值还原原值，新填的明文原样保留
+        if (input.provider) input.provider = { ...input.provider, apiKey: unmask(input.provider.apiKey, cur.provider?.apiKey) };
+        if (Array.isArray(input.models)) {
+          const curById = new Map((cur.models || []).map((m) => [m.id, m]));
+          input.models = input.models.map((m) => {
+            const real = curById.get((m.id || "").trim() || m.model);
+            return { ...m, apiKey: unmask(m.apiKey, real ? real.apiKey : "") };
+          });
         }
         const result = sanitizeConfig(input);
         if (!result.ok) return json(res, { ok: false, error: result.error });
