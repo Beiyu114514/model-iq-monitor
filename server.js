@@ -111,6 +111,39 @@ const server = http.createServer((req, res) => {
   }
 });
 
+// ---------- 管理页 API ----------
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let buf = "";
+    req.on("data", (c) => { buf += c; if (buf.length > 1e6) reject(new Error("body too large")); });
+    req.on("end", () => resolve(buf));
+    req.on("error", reject);
+  });
+}
+
+// 校验并规范化管理提交的配置；返回 {ok, cfg} 或 {ok:false, error}
+function sanitizeConfig(input) {
+  if (!input || typeof input !== "object") return { ok: false, error: "配置格式错误" };
+  const out = { ...input };
+  if (!Array.isArray(out.questions) || out.questions.length === 0) return { ok: false, error: "questions 不能为空" };
+  for (const [i, q] of out.questions.entries()) {
+    if (!q || typeof q !== "object") return { ok: false, error: `第 ${i + 1} 题格式错误` };
+    if (typeof q.id !== "string" || !q.id.trim()) return { ok: false, error: `第 ${i + 1} 题缺少 id` };
+    if (typeof q.question !== "string" || !q.question.trim()) return { ok: false, error: `第 ${i + 1} 题缺少 question` };
+    if (!Array.isArray(q.answerKeywords) || q.answerKeywords.length === 0) return { ok: false, error: `第 ${i + 1} 题缺少 answerKeywords` };
+    out.questions[i] = { ...q, enabled: q.enabled !== false };
+  }
+  const im = Number(out.intervalMinutes);
+  if (!Number.isFinite(im) || im < 1 || im > 1440) return { ok: false, error: "intervalMinutes 需在 1-1440 之间" };
+  out.intervalMinutes = im;
+  const rd = Number(out.retentionDays);
+  if (!Number.isFinite(rd) || rd < 1 || rd > 365) return { ok: false, error: "retentionDays 需在 1-365 之间" };
+  out.retentionDays = rd;
+  if (out.checkToken !== undefined && typeof out.checkToken !== "string") return { ok: false, error: "checkToken 需为字符串" };
+  if (out.checkToken === "") delete out.checkToken;
+  return { ok: true, cfg: out };
+}
+
 function handle(req, res) {
   let url;
   try {
@@ -152,6 +185,44 @@ function handle(req, res) {
     tick();
     return json(res, { ok: true, queued: true, started });
   }
+  // ---------- 管理接口：读/写完整配置，需管理员 token ----------
+  if (p === "/api/admin/config") {
+    const cfgNow = loadConfig();
+    const adminToken = cfgNow.adminToken || cfgNow.checkToken;
+    const given = req.headers["x-admin-token"] || url.searchParams.get("token");
+    const isLocal = req.socket.remoteAddress === "127.0.0.1" || req.socket.remoteAddress === "::1";
+    // 未配置 token 时仅允许本机访问，避免公网裸奔
+    if (adminToken ? given !== adminToken : !isLocal) {
+      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+      return res.end(JSON.stringify({ ok: false, error: "未授权" }));
+    }
+    if (req.method === "GET") {
+      // apiKey 打码后再下发
+      const safe = { ...cfgNow, provider: { ...cfgNow.provider, apiKey: cfgNow.provider?.apiKey ? cfgNow.provider.apiKey.slice(0, 6) + "***" : "" } };
+      return json(res, safe);
+    }
+    if (req.method === "PUT") {
+      return readBody(req).then((buf) => {
+        let input;
+        try { input = JSON.parse(buf); } catch { return json(res, { ok: false, error: "JSON 解析失败" }); }
+        const cur = loadConfig();
+        // provider/apiKey 不在前端明文下发，这里合并回写
+        if (input.provider && typeof input.provider.apiKey === "string" && input.provider.apiKey.includes("***")) {
+          input.provider = { ...input.provider, apiKey: cur.provider?.apiKey || "" };
+        }
+        const result = sanitizeConfig(input);
+        if (!result.ok) return json(res, { ok: false, error: result.error });
+        const next = { ...cur, ...result.cfg };
+        const tmp = path.join(__dirname, "config.json.tmp");
+        fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n");
+        fs.renameSync(tmp, path.join(__dirname, "config.json"));
+        return json(res, { ok: true });
+      }).catch((e) => {
+        res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: String(e.message || e) }));
+      });
+    }
+  }
   // 静态页
   let file = p === "/" ? "/index.html" : p;
   const fp = path.join(__dirname, "public", path.normalize(file));
@@ -159,6 +230,10 @@ function handle(req, res) {
     const ext = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png" }[path.extname(fp)] || "application/octet-stream";
     res.writeHead(200, { "Content-Type": ext + "; charset=utf-8" });
     return res.end(fs.readFileSync(fp));
+  }
+  if (p === "/admin") { // 管理页（无 .html 后缀也可访问）
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    return res.end(fs.readFileSync(path.join(__dirname, "public", "admin.html")));
   }
   res.writeHead(404); res.end("not found");
 }

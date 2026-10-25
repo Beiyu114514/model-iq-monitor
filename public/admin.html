@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light dark">
+<title>后台管理 · 模型状态监测</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #faf9f7; --surface: #ffffff; --surface-2: #f5f3f0;
+    --ink: #1a1a18; --muted: #6f6862; --border: #e7e4de;
+    --ok: #47730c; --bad: #c0392b; --accent: #b5532f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --surface: #1d1c1a; --surface-2: #262522;
+      --ink: #f5f3ef; --muted: #a8a29a; --border: #36332e;
+      --ok: #8fbc4a; --bad: #e06c5f; --accent: #e79275;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 0.9375rem; line-height: 1.5;
+    background: var(--bg); color: var(--ink); padding: 2rem 1.25rem; max-width: 860px; margin: 0 auto;
+  }
+  h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.25rem; }
+  .sub { color: var(--muted); font-size: 0.8125rem; margin-bottom: 1.5rem; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
+  a { color: var(--accent); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.25rem; margin-bottom: 1rem; }
+  .card h2 { font-size: 0.9375rem; font-weight: 600; margin-bottom: 0.75rem; }
+  fieldset { border: 0; padding: 0; margin: 0 0 1rem; }
+  label { display: block; font-size: 0.75rem; color: var(--muted); margin-bottom: 0.25rem; }
+  input[type="text"], input[type="number"], input[type="password"], textarea {
+    width: 100%; padding: 0.4375rem 0.625rem; font: inherit; font-size: 0.875rem;
+    background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 0.5rem;
+  }
+  input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  textarea { resize: vertical; min-height: 3.75rem; }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0.75rem; }
+  .q-item { border: 1px solid var(--border); border-radius: 0.625rem; padding: 0.875rem; margin-bottom: 0.75rem; background: var(--surface-2); }
+  .q-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+  .q-head .title { font-size: 0.8125rem; font-weight: 600; }
+  .q-head button { appearance: none; border: 0; background: none; color: var(--bad); cursor: pointer; font-size: 0.75rem; padding: 0.25rem 0.5rem; border-radius: 0.375rem; }
+  .q-head button:hover { background: var(--surface); }
+  .q-item .row { margin-bottom: 0.5rem; }
+  .check-line { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; }
+  .check-line input { width: auto; }
+  .btn { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink); border-radius: 0.5rem; padding: 0.4375rem 1.25rem; font-size: 0.875rem; cursor: pointer; }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-sm { padding: 0.25rem 0.875rem; font-size: 0.8125rem; }
+  .toolbar { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+  .msg { font-size: 0.8125rem; min-height: 1.25rem; margin-top: 0.5rem; }
+  .msg.ok { color: var(--ok); }
+  .msg.bad { color: var(--bad); }
+  .token-bar { display: flex; gap: 0.5rem; margin-bottom: 1.25rem; }
+  .token-bar input { max-width: 18rem; }
+  .lock { display: none; }
+  .lock.show { display: block; }
+  @media (max-width: 40rem) { body { padding: 1.25rem 0.875rem; } }
+</style>
+</head>
+<body>
+<h1>后台管理</h1>
+<div class="sub"><a href="/">← 返回监测面板</a><span>修改保存后立即生效，无需重启</span></div>
+
+<div class="card lock show" id="lock">
+  <h2>管理员验证</h2>
+  <p style="font-size:0.8125rem;color:var(--muted);margin-bottom:0.75rem">
+    本页需要管理令牌（config.json 的 <code>adminToken</code>，未设置时为 <code>checkToken</code>）。未配置任何令牌时仅允许本机访问。
+  </p>
+  <div class="token-bar">
+    <input type="password" id="token-input" placeholder="管理令牌" aria-label="管理令牌">
+    <button type="button" class="btn" id="token-btn">进入</button>
+  </div>
+  <div class="msg" id="lock-msg"></div>
+</div>
+
+<div id="app" style="display:none">
+  <form id="form">
+    <div class="card">
+      <h2>检测问题</h2>
+      <div id="questions"></div>
+      <button type="button" class="btn btn-sm" id="add-q">+ 添加问题</button>
+      <p style="font-size:0.75rem;color:var(--muted);margin-top:0.5rem">answerKeywords 逗号分隔，回答包含任意一个即判定为不降智。</p>
+    </div>
+
+    <div class="card">
+      <h2>调度与保留</h2>
+      <div class="row">
+        <fieldset>
+          <label for="interval">检测间隔（分钟，1-1440）</label>
+          <input type="number" id="interval" min="1" max="1440" step="1" required>
+        </fieldset>
+        <fieldset>
+          <label for="retention">保留天数（1-365）</label>
+          <input type="number" id="retention" min="1" max="365" step="1" required>
+        </fieldset>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>访问控制</h2>
+      <fieldset>
+        <label for="check-token">手动检测令牌 checkToken（留空 = 不启用）</label>
+        <input type="text" id="check-token" autocomplete="off">
+      </fieldset>
+      <fieldset>
+        <label for="admin-token">管理令牌 adminToken（留空 = 跟随手动检测令牌）</label>
+        <input type="text" id="admin-token" autocomplete="off">
+      </fieldset>
+      <p style="font-size:0.75rem;color:var(--muted)">注意：修改管理令牌保存后，需要用新令牌重新进入本页。</p>
+    </div>
+
+    <div class="toolbar">
+      <button type="submit" class="btn primary">保存配置</button>
+      <button type="button" class="btn" id="reload">放弃修改并重新加载</button>
+      <span class="msg" id="msg"></span>
+    </div>
+  </form>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+let adminToken = sessionStorage.getItem("iq-admin-token") || "";
+
+function setMsg(el, text, ok) {
+  el.textContent = text;
+  el.className = "msg " + (ok ? "ok" : "bad");
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", ...(adminToken ? { "x-admin-token": adminToken } : {}), ...(opts?.headers || {}) },
+  });
+  if (res.status === 403) throw new Error("未授权：令牌错误或已变更");
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+// ---------- 问题编辑 ----------
+function qField(q, i) {
+  return `<div class="q-item" data-i="${i}">
+    <div class="q-head"><span class="title">问题 ${i + 1}</span><button type="button" class="del-q">删除</button></div>
+    <div class="row">
+      <fieldset><label>问题 ID</label><input type="text" class="q-id" value="${esc(q.id)}" required></fieldset>
+      <fieldset><label>关键词（逗号分隔）</label><input type="text" class="q-kw" value="${esc((q.answerKeywords || []).join(", "))}" required></fieldset>
+    </div>
+    <fieldset><label>题目内容</label><textarea class="q-text" required>${esc(q.question)}</textarea></fieldset>
+    <div class="check-line"><input type="checkbox" class="q-enabled" ${q.enabled !== false ? "checked" : ""} id="en-${i}"><label for="en-${i}" style="margin:0">启用</label></div>
+  </div>`;
+}
+
+function renderQuestions(questions) {
+  $("questions").innerHTML = questions.map(qField).join("");
+  document.querySelectorAll(".del-q").forEach((b) => b.addEventListener("click", (e) => {
+    if (!confirm("确定删除这个问题？")) return;
+    e.target.closest(".q-item").remove();
+  }));
+}
+
+function collectQuestions() {
+  return [...document.querySelectorAll(".q-item")].map((el) => ({
+    id: el.querySelector(".q-id").value.trim(),
+    question: el.querySelector(".q-text").value.trim(),
+    answerKeywords: el.querySelector(".q-kw").value.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
+    enabled: el.querySelector(".q-enabled").checked,
+  }));
+}
+
+$("add-q").addEventListener("click", () => {
+  const div = document.createElement("div");
+  div.innerHTML = qField({ id: "", question: "", answerKeywords: [], enabled: true }, document.querySelectorAll(".q-item").length);
+  const el = div.firstElementChild;
+  $("questions").appendChild(el);
+  el.querySelector(".del-q").addEventListener("click", (e) => {
+    if (!confirm("确定删除这个问题？")) return;
+    e.target.closest(".q-item").remove();
+  });
+  el.querySelector(".q-id").focus();
+});
+
+// ---------- 加载 / 保存 ----------
+let loaded = null;
+
+async function loadConfig() {
+  const cfg = await api("/api/admin/config");
+  loaded = cfg;
+  renderQuestions(cfg.questions || []);
+  $("interval").value = cfg.intervalMinutes ?? 1;
+  $("retention").value = cfg.retentionDays ?? 7;
+  $("check-token").value = cfg.checkToken || "";
+  $("admin-token").value = cfg.adminToken || "";
+  $("lock").classList.remove("show");
+  $("app").style.display = "";
+}
+
+$("form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const msg = $("msg");
+  const questions = collectQuestions();
+  if (questions.some((q) => !q.id || !q.question || q.answerKeywords.length === 0)) {
+    return setMsg(msg, "有问题缺少 ID / 题目 / 关键词，请补全", false);
+  }
+  const payload = {
+    ...loaded,
+    questions,
+    intervalMinutes: +$("interval").value,
+    retentionDays: +$("retention").value,
+  };
+  if ($("check-token").value.trim() !== (loaded.checkToken || "")) payload.checkToken = $("check-token").value.trim();
+  if ($("admin-token").value.trim() !== (loaded.adminToken || "")) payload.adminToken = $("admin-token").value.trim();
+  try {
+    const r = await api("/api/admin/config", { method: "PUT", body: JSON.stringify(payload) });
+    if (!r.ok) return setMsg(msg, r.error || "保存失败", false);
+    setMsg(msg, "已保存，立即生效 ✓", true);
+    await loadConfig();
+  } catch (err) {
+    setMsg(msg, "保存失败：" + err.message, false);
+  }
+});
+
+$("reload").addEventListener("click", () => loadConfig().catch((e) => setMsg($("msg"), "加载失败：" + e.message, false)));
+
+// ---------- 令牌解锁 ----------
+async function tryUnlock() {
+  adminToken = $("token-input").value;
+  try {
+    await loadConfig();
+    sessionStorage.setItem("iq-admin-token", adminToken);
+    setMsg($("lock-msg"), "", true);
+  } catch (e) {
+    setMsg($("lock-msg"), e.message, false);
+  }
+}
+$("token-btn").addEventListener("click", tryUnlock);
+$("token-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); tryUnlock(); } });
+
+// 已有令牌则直接尝试进入
+if (adminToken) tryUnlock();
+</script>
+</body>
+</html>

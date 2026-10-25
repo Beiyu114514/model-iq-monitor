@@ -14,8 +14,11 @@
     {
       "id": "jp-pm",
       "question": "日本现任首相是谁？只回答名字。",
-      "answerKeywords": ["高市早苗"],
+      "answerKeywords": [
+        "高市早苗"
+      ],
       "enabled": true
     }
-  ]
+  ],
+  "checkToken": "adm-test"
 }
