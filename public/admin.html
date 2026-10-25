@@ -264,7 +264,10 @@ $("form").addEventListener("submit", async (e) => {
   if (questions.some((q) => !q.id || !q.question || q.answerKeywords.length === 0)) {
     return setMsg(msg, "有问题缺少 ID / 题目 / 关键词，请补全", false);
   }
-  const models = collectModels().filter((m) => m.model);
+  const models = collectModels();
+  if (models.some((m) => !m.model)) {
+    return setMsg(msg, "有模型缺少模型名称，请补全或删除该行", false);
+  }
   if (models.length === 0) {
     return setMsg(msg, "至少需要一个模型", false);
   }

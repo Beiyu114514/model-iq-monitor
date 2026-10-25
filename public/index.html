@@ -182,7 +182,8 @@ function setConn(ok, text) {
 
 async function refreshSummary() {
   const s = await getJSON("/api/summary");
-  $("rate").textContent = s.rate24h === null ? "—" : s.rate24h + "%";  $("latency").textContent = s.avgLatency === null ? "—" : (s.avgLatency / 1000).toFixed(1) + "s";
+  $("rate").textContent = s.rate24h === null ? "—" : s.rate24h + "%";
+  $("latency").textContent = s.avgLatency === null ? "—" : (s.avgLatency / 1000).toFixed(1) + "s";
   if (s.lastCheck) {
     const l = s.lastCheck;
     $("last-time").textContent = fmtFull(l.ts);

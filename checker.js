@@ -100,7 +100,10 @@ async function runChecks(cfg) {
   const { provider } = cfg;
   const results = [];
   const models = modelsOf(cfg).filter((m) => m.enabled);
-  if (!models.length) return results;
+  if (!models.length) {
+    console.warn("runChecks: 没有可用的检测模型（models 配置为空或全部无效）");
+    return results;
+  }
   for (const m of models) {
     const base = (m.baseUrl || provider.baseUrl || "").replace(/\/$/, "");
     const apiKey = m.apiKey || provider.apiKey;

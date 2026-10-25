@@ -237,8 +237,10 @@ function handle(req, res) {
         if (input.provider) input.provider = { ...input.provider, apiKey: unmask(input.provider.apiKey, cur.provider?.apiKey) };
         if (Array.isArray(input.models)) {
           const curById = new Map((cur.models || []).map((m) => [m.id, m]));
-          input.models = input.models.map((m) => {
-            const real = curById.get((m.id || "").trim() || m.model);
+          const curModels = cur.models || [];
+          input.models = input.models.map((m, idx) => {
+            // 优先按 id 匹配还原打码 key；用户改了 id 时按索引回退，避免静默清空独立 key
+            const real = curById.get((m.id || "").trim() || m.model) || curModels[idx];
             return { ...m, apiKey: unmask(m.apiKey, real ? real.apiKey : "") };
           });
         }
