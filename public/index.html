@@ -57,19 +57,20 @@
   .history-head #granularity { letter-spacing: 0; text-transform: none; }
   .bars { display: flex; align-items: flex-end; gap: clamp(1px, 0.18vw, 3px); height: 4rem; margin: 0.875rem 0 0.5rem; }
   .bar { appearance: none; border: 0; padding: 0; flex: 1 1 0; min-width: 0; height: 100%; border-radius: 1px; background: var(--heat-none); cursor: pointer; transition: opacity 0.12s ease; }
-  .bar:hover { opacity: 0.75; }
+  .bar:hover { opacity: 0.88; }
   .bar:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; position: relative; z-index: 1; }
   .bar.ok { background: var(--ok); }
   .bar.warn { background: var(--warn); }
   .bar.bad { background: var(--bad); }
   .bar.info { background: var(--info); }
-  .bar.none { background: var(--heat-none); }
+  /* 无数据的格子用浅色短柱表示，避免在浅色背景上完全看不见 */
+  .bar.none { background: var(--border); height: 18%; align-self: flex-end; }
   .axis { display: flex; justify-content: space-between; font-size: 0.6875rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
   .legend { display: flex; gap: 0.875rem; flex-wrap: wrap; font-size: 0.75rem; color: var(--muted); margin-top: 0.875rem; padding-top: 0.75rem; border-top: 1px solid var(--border); align-items: center; }
   .legend .sw { display: inline-block; width: 0.25rem; height: 0.75rem; border-radius: 1px; margin-right: 0.375rem; vertical-align: -2px; }
   .sw.ok { background: var(--ok); } .sw.warn { background: var(--warn); }
   .sw.bad { background: var(--bad); } .sw.info { background: var(--info); }
-  .sw.none { background: var(--heat-none); border: 1px solid var(--border); }
+  .sw.none { background: var(--border); }
   .detail { font-size: 0.8125rem; color: var(--muted); margin: 0.5rem 0 0; min-height: 1.125rem; }
   .detail strong { color: var(--ink); font-weight: 500; }
   .table-wrap { border: 1px solid var(--border); border-radius: 0.75rem; overflow: auto; background: var(--surface); scrollbar-width: thin; max-height: 24rem; }
@@ -163,10 +164,10 @@
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const isToday = (ts) => new Date(ts).toDateString() === new Date().toDateString();
-const fmtTs = (ts) => isToday(ts)
+const fmtTs = (ts) => !Number.isFinite(ts) ? "—" : isToday(ts)
   ? new Date(ts).toLocaleTimeString("zh-CN", { hour12: false })
   : new Date(ts).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
-const fmtFull = (ts) => new Date(ts).toLocaleString("zh-CN", { hour12: false });
+const fmtFull = (ts) => Number.isFinite(ts) ? new Date(ts).toLocaleString("zh-CN", { hour12: false }) : "—";
 
 async function getJSON(url) {
   const res = await fetch(url, { cache: "no-store" });
@@ -184,13 +185,17 @@ async function refreshSummary() {
   const s = await getJSON("/api/summary");
   $("rate").textContent = s.rate24h === null ? "—" : s.rate24h + "%";
   $("latency").textContent = s.avgLatency === null ? "—" : (s.avgLatency / 1000).toFixed(1) + "s";
+  const el = $("last-state");
   if (s.lastCheck) {
     const l = s.lastCheck;
     $("last-time").textContent = fmtFull(l.ts);
-    const el = $("last-state");
     if (l.hit === null || l.hit === undefined) el.innerHTML = '<span class="badge info">请求异常</span>';
     else if (l.hit) el.innerHTML = '<span class="badge ok">不降智</span>';
     else el.innerHTML = '<span class="badge bad">降智</span>';
+  } else {
+    // 没有记录时清空，避免沿用上一轮的徽章（清空数据后仍显示「不降智」）
+    el.textContent = "—";
+    $("last-time").textContent = "—";
   }
 }
 
@@ -296,7 +301,7 @@ async function refreshLogs() {
     const ans = r.error
       ? `<span class="err-text" title="${esc(r.error)}">${esc(r.error.length > 60 ? r.error.slice(0, 60) + "…" : r.error)}</span>`
       : `<span class="answer" title="${esc(r.answer)}">${esc(r.answer || "—")}</span>`;
-    return `<tr><td class="mono time" title="${esc(fmtFull(r.ts))}">${esc(fmtTs(r.ts))}</td><td class="qid">${esc(r.modelId || "—")}</td><td class="qid">${esc(r.questionId)}</td><td>${st}</td><td>${ans}</td><td class="mono latency">${r.latencyMs ?? "—"} ms</td><td class="mono"><span class="rid" title="${esc(r.requestId)}">${esc(r.requestId || "—")}</span></td></tr>`;
+    return `<tr><td class="mono time" title="${esc(fmtFull(r.ts))}">${esc(fmtTs(r.ts))}</td><td class="qid">${esc(r.modelId || "—")}</td><td class="qid">${esc(r.questionId)}</td><td>${st}</td><td>${ans}</td><td class="mono latency">${r.latencyMs ?? "—"} ms</td><td class="mono"><span class="rid" title="${esc(r.requestId || "")}">${esc(r.requestId || "—")}</span></td></tr>`;
   }).join("") || '<tr><td colspan="7" style="color:var(--muted)">等待首次检测</td></tr>';
 
   // 已滚到底部则继续贴底；否则维持原位置，避免 30 秒刷新打断阅读
