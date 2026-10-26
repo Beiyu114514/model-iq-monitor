@@ -137,6 +137,9 @@ const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 let adminToken = sessionStorage.getItem("iq-admin-token") || "";
 
+// 删除行后 DOM 里的序号会断档，用自增计数保证 checkbox id 唯一，label 才能正确联动
+let uid = 0;
+
 function setMsg(el, text, ok) {
   el.textContent = text;
   el.className = "msg " + (ok ? "ok" : "bad");
@@ -154,6 +157,7 @@ async function api(path, opts) {
 
 // ---------- 问题编辑 ----------
 function qField(q, i) {
+  const n = uid++;
   return `<div class="q-item" data-i="${i}">
     <div class="q-head"><span class="title">问题 ${i + 1}</span><button type="button" class="del-q">删除</button></div>
     <div class="row">
@@ -161,7 +165,7 @@ function qField(q, i) {
       <fieldset><label>关键词（逗号分隔）</label><input type="text" class="q-kw" value="${esc((q.answerKeywords || []).join(", "))}" required></fieldset>
     </div>
     <fieldset><label>题目内容</label><textarea class="q-text" required>${esc(q.question)}</textarea></fieldset>
-    <div class="check-line"><input type="checkbox" class="q-enabled" ${q.enabled !== false ? "checked" : ""} id="en-${i}"><label for="en-${i}" style="margin:0">启用</label></div>
+    <div class="check-line"><input type="checkbox" class="q-enabled" ${q.enabled !== false ? "checked" : ""} id="en-${n}"><label for="en-${n}" style="margin:0">启用</label></div>
   </div>`;
 }
 
@@ -196,6 +200,7 @@ $("add-q").addEventListener("click", () => {
 
 // ---------- 模型编辑 ----------
 function mField(m, i) {
+  const n = uid++;
   return `<div class="q-item m-item" data-i="${i}">
     <div class="q-head"><span class="title">模型 ${i + 1}</span><button type="button" class="del-m">删除</button></div>
     <div class="row">
@@ -206,7 +211,7 @@ function mField(m, i) {
       <fieldset><label>Base URL（留空 = 通用）</label><input type="text" class="m-base" value="${esc(m.baseUrl || "")}" placeholder="https://中转站/v1"></fieldset>
       <fieldset><label>API Key（留空 = 通用）</label><input type="password" class="m-key" value="${esc(m.apiKey || "")}" autocomplete="new-password"></fieldset>
     </div>
-    <div class="check-line"><input type="checkbox" class="m-enabled" ${m.enabled !== false ? "checked" : ""} id="men-${i}"><label for="men-${i}" style="margin:0">启用</label></div>
+    <div class="check-line"><input type="checkbox" class="m-enabled" ${m.enabled !== false ? "checked" : ""} id="men-${n}"><label for="men-${n}" style="margin:0">启用</label></div>
   </div>`;
 }
 

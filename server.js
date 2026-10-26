@@ -2,6 +2,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { loadConfig, runChecks, readRecords, modelsOf } = require("./checker");
 
 const cfg = loadConfig();
@@ -94,7 +95,7 @@ if (process.env.DISABLE_SCHEDULER !== "1") {
 
 // ---------- API ----------
 function json(res, data) {
-  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data));
 }
 
@@ -164,6 +165,23 @@ function sanitizeConfig(input) {
   return { ok: true, cfg: out };
 }
 
+// 常数时间比较令牌，避免公网部署时按响应时间逐位猜 token
+function tokenMatches(given, expected) {
+  if (!expected) return true;
+  if (typeof given !== "string") return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// 校验失败时延迟响应，加大公网暴力猜 token 的成本
+function rejectToken(res, message) {
+  setTimeout(() => {
+    if (!res.headersSent) res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ ok: false, error: message }));
+  }, 500);
+}
+
 function handle(req, res) {
   let url;
   try {
@@ -196,10 +214,7 @@ function handle(req, res) {
     // 配置了 token 时要求请求带上，避免暴露公网时被人刷真实 API 调用
     const token = loadConfig().checkToken;
     const given = req.headers["x-check-token"] || url.searchParams.get("token");
-    if (token && given !== token) {
-      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
-      return res.end(JSON.stringify({ ok: false, error: "invalid token" }));
-    }
+    if (token && !tokenMatches(given, token)) return rejectToken(res, "invalid token");
     if (process.env.DISABLE_SCHEDULER === "1") return json(res, { ok: true, demo: true });
     // tick 是 async 的，调用返回的是 Promise；用同步守卫判断是否真的开始
     const started = !isRunning();
@@ -211,11 +226,11 @@ function handle(req, res) {
     const cfgNow = loadConfig();
     const adminToken = cfgNow.adminToken || cfgNow.checkToken;
     const given = req.headers["x-admin-token"] || url.searchParams.get("token");
-    const isLocal = req.socket.remoteAddress === "127.0.0.1" || req.socket.remoteAddress === "::1";
+    const ip = req.socket.remoteAddress;
+    const isLocal = ip === "::1" || ip === "127.0.0.1" || ip === "::ffff:127.0.0.1";
     // 未配置 token 时仅允许本机访问，避免公网裸奔
-    if (adminToken ? given !== adminToken : !isLocal) {
-      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
-      return res.end(JSON.stringify({ ok: false, error: "未授权" }));
+    if (adminToken ? !tokenMatches(given, adminToken) : !isLocal) {
+      return rejectToken(res, "未授权");
     }
     if (req.method === "GET") {
       // apiKey 打码后再下发（provider 与每个模型）
