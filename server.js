@@ -75,18 +75,26 @@ async function tick() {
     console.error("tick failed:", e);
   } finally {
     running = false;
-    schedule(); // 每轮结束后按最新配置重排，intervalMinutes 热更新
+    try {
+      schedule(); // 配置里的间隔变了才重排，手动检测不会推迟下一次定时检测
+    } catch (e) {
+      console.error("reschedule failed:", e);
+    }
   }
   return true;
 }
 
 // 间隔支持热更新：改 intervalMinutes 不用重启
 let schedulerTimer = null;
+let schedulerMinutes = null;
 function schedule() {
   if (process.env.DISABLE_SCHEDULER === "1") return;
+  const m = Number(loadConfig().intervalMinutes);
+  const minutes = Number.isFinite(m) && m > 0 ? m : 1;
+  if (schedulerTimer && schedulerMinutes === minutes) return;
   if (schedulerTimer) clearInterval(schedulerTimer);
-  const minutes = Number(loadConfig().intervalMinutes);
-  schedulerTimer = setInterval(tick, (Number.isFinite(minutes) && minutes > 0 ? minutes : 1) * 60 * 1000);
+  schedulerMinutes = minutes;
+  schedulerTimer = setInterval(tick, minutes * 60 * 1000);
 }
 if (process.env.DISABLE_SCHEDULER !== "1") {
   setTimeout(tick, 3000); // 启动后先跑一次
@@ -100,6 +108,7 @@ function json(res, data) {
 }
 
 const PUBLIC_ROOT = path.join(__dirname, "public") + path.sep;
+const CONFIG_PATH = path.join(__dirname, "config.json");
 
 const server = http.createServer((req, res) => {
   // 任何未捕获异常都不能打挂进程
@@ -113,27 +122,67 @@ const server = http.createServer((req, res) => {
 });
 
 // ---------- 管理页 API ----------
+const MAX_BODY = 1e6;
+
+// 必须按 Buffer 拼接后再整体解码，否则跨 TCP 分片的多字节字符会被截断成 U+FFFD
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let buf = "";
-    req.on("data", (c) => { buf += c; if (buf.length > 1e6) reject(new Error("body too large")); });
-    req.on("end", () => resolve(buf));
-    req.on("error", reject);
+    const chunks = [];
+    let size = 0;
+    let failed = false;
+    const fail = (e) => {
+      if (failed) return;
+      failed = true;
+      reject(e);
+    };
+    req.on("data", (c) => {
+      if (failed) return;
+      size += c.length;
+      if (size > MAX_BODY) return fail(new Error("body too large"));
+      chunks.push(c);
+    });
+    req.on("end", () => {
+      if (!failed) resolve(Buffer.concat(chunks, size).toString("utf8"));
+    });
+    req.on("error", fail);
   });
 }
 
 // 校验并规范化管理提交的配置；返回 {ok, cfg} 或 {ok:false, error}
 function sanitizeConfig(input) {
-  if (!input || typeof input !== "object") return { ok: false, error: "配置格式错误" };
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, error: "配置格式错误" };
   const out = { ...input };
+  if (out.provider !== undefined) {
+    const p = out.provider;
+    if (!p || typeof p !== "object" || Array.isArray(p)) return { ok: false, error: "provider 格式错误" };
+    if (p.baseUrl !== undefined && typeof p.baseUrl !== "string") return { ok: false, error: "provider.baseUrl 需为字符串" };
+    if (p.apiKey !== undefined && typeof p.apiKey !== "string") return { ok: false, error: "provider.apiKey 需为字符串" };
+    if (p.model !== undefined && typeof p.model !== "string") return { ok: false, error: "provider.model 需为字符串" };
+    if (p.timeoutMs !== undefined && (!Number.isFinite(Number(p.timeoutMs)) || Number(p.timeoutMs) <= 0)) {
+      return { ok: false, error: "provider.timeoutMs 需为正数" };
+    }
+    out.provider = {
+      ...p,
+      baseUrl: typeof p.baseUrl === "string" ? p.baseUrl.trim() : "",
+      apiKey: typeof p.apiKey === "string" ? p.apiKey.trim() : "",
+    };
+  }
   if (!Array.isArray(out.questions) || out.questions.length === 0) return { ok: false, error: "questions 不能为空" };
+  const qIds = new Set();
+  const questions = [];
   for (const [i, q] of out.questions.entries()) {
     if (!q || typeof q !== "object") return { ok: false, error: `第 ${i + 1} 题格式错误` };
     if (typeof q.id !== "string" || !q.id.trim()) return { ok: false, error: `第 ${i + 1} 题缺少 id` };
     if (typeof q.question !== "string" || !q.question.trim()) return { ok: false, error: `第 ${i + 1} 题缺少 question` };
     if (!Array.isArray(q.answerKeywords) || q.answerKeywords.length === 0) return { ok: false, error: `第 ${i + 1} 题缺少 answerKeywords` };
-    out.questions[i] = { ...q, enabled: q.enabled !== false };
+    const keywords = q.answerKeywords.map((k) => (typeof k === "string" ? k.trim() : ""));
+    if (keywords.some((k) => !k)) return { ok: false, error: `第 ${i + 1} 题的关键词不能为空` };
+    const id = q.id.trim();
+    if (qIds.has(id)) return { ok: false, error: `问题 ID「${id}」重复` };
+    qIds.add(id);
+    questions.push({ ...q, id, question: q.question.trim(), answerKeywords: keywords, enabled: q.enabled !== false });
   }
+  out.questions = questions;
   const im = Number(out.intervalMinutes);
   if (!Number.isFinite(im) || im < 1 || im > 1440) return { ok: false, error: "intervalMinutes 需在 1-1440 之间" };
   out.intervalMinutes = im;
@@ -147,23 +196,53 @@ function sanitizeConfig(input) {
   if (out.models !== undefined) {
     if (!Array.isArray(out.models) || out.models.length === 0) return { ok: false, error: "models 不能为空" };
     const seen = new Set();
+    const models = [];
     for (const [i, m] of out.models.entries()) {
       if (!m || typeof m !== "object") return { ok: false, error: `第 ${i + 1} 个模型格式错误` };
       if (typeof m.model !== "string" || !m.model.trim()) return { ok: false, error: `第 ${i + 1} 个模型缺少 model 名称` };
       const id = (typeof m.id === "string" && m.id.trim()) || m.model.trim();
       if (seen.has(id)) return { ok: false, error: `模型 ID「${id}」重复` };
       seen.add(id);
-      out.models[i] = {
+      models.push({
         id,
         model: m.model.trim(),
         baseUrl: typeof m.baseUrl === "string" ? m.baseUrl.trim() : "",
         apiKey: typeof m.apiKey === "string" ? m.apiKey.trim() : "",
         enabled: m.enabled !== false,
-      };
+      });
     }
+    out.models = models;
   }
   return { ok: true, cfg: out };
 }
+
+// 写盘时沿用原文件的权限位，避免一次保存就让 config.json 里的密钥对其他系统用户可读
+function writeConfig(next) {
+  const tmp = CONFIG_PATH + ".tmp";
+  const mode = fs.statSync(CONFIG_PATH).mode & 0o777;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n", { mode });
+    fs.chmodSync(tmp, mode); // tmp 若是残留文件，open 时的 mode 不生效
+    fs.renameSync(tmp, CONFIG_PATH);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw e;
+  }
+}
+
+function remoteIsLocal(req) {
+  const ip = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
+  if (ip !== "127.0.0.1" && ip !== "::1") return false;
+  // 同机反代会让远端请求看起来来自本机；带了转发头就不当作本机
+  if (req.headers["x-forwarded-for"] || req.headers["x-real-ip"] || req.headers["forwarded"]) return false;
+  return true;
+}
+
+const maskKey = (k) => {
+  if (typeof k !== "string" || !k) return "";
+  if (k.length <= 12) return "***";
+  return k.slice(0, 4) + "***" + k.slice(-4);
+};
 
 // 常数时间比较令牌，避免公网部署时按响应时间逐位猜 token
 function tokenMatches(given, expected) {
@@ -199,23 +278,28 @@ function handle(req, res) {
   }
   if (p === "/api/logs") {
     const n = +url.searchParams.get("limit");
-    const limit = Number.isFinite(n) && n > 0 ? Math.min(n, 200) : 60;
+    const limit = Number.isInteger(n) && n > 0 ? Math.min(n, 200) : 60;
     const records = readRecords();
     return json(res, records.slice(-limit).reverse());
   }
-  if (p === "/api/config") return json(res, {
-    questions: loadConfig().questions,
-    intervalMinutes: loadConfig().intervalMinutes,
-    retentionDays: loadConfig().retentionDays,
-    needToken: Boolean(loadConfig().checkToken),
-    models: modelsOf(loadConfig()).filter((m) => m.enabled).map((m) => m.id),
-  });
+  if (p === "/api/config") {
+    const conf = loadConfig();
+    return json(res, {
+      questions: conf.questions,
+      intervalMinutes: conf.intervalMinutes,
+      retentionDays: conf.retentionDays,
+      needToken: Boolean(conf.checkToken),
+      models: modelsOf(conf).filter((m) => m.enabled).map((m) => m.id),
+    });
+  }
   if (p === "/api/check" && req.method === "POST") { // 手动触发一次
     // 配置了 token 时要求请求带上，避免暴露公网时被人刷真实 API 调用
-    const token = loadConfig().checkToken;
+    const conf = loadConfig();
+    const token = conf.checkToken;
     const given = req.headers["x-check-token"] || url.searchParams.get("token");
     if (token && !tokenMatches(given, token)) return rejectToken(res, "invalid token");
     if (process.env.DISABLE_SCHEDULER === "1") return json(res, { ok: true, demo: true });
+    if (!modelsOf(conf).some((m) => m.enabled)) return json(res, { ok: false, error: "没有启用的检测模型" });
     // tick 是 async 的，调用返回的是 Promise；用同步守卫判断是否真的开始
     const started = !isRunning();
     tick();
@@ -224,50 +308,78 @@ function handle(req, res) {
   // ---------- 管理接口：读/写完整配置，需管理员 token ----------
   if (p === "/api/admin/config") {
     const cfgNow = loadConfig();
-    const adminToken = cfgNow.adminToken || cfgNow.checkToken;
+    const adminToken = cfgNow.adminToken; // 不再回退到 checkToken：看板令牌不应能改配置
     const given = req.headers["x-admin-token"] || url.searchParams.get("token");
-    const ip = req.socket.remoteAddress;
-    const isLocal = ip === "::1" || ip === "127.0.0.1" || ip === "::ffff:127.0.0.1";
-    // 未配置 token 时仅允许本机访问，避免公网裸奔
-    if (adminToken ? !tokenMatches(given, adminToken) : !isLocal) {
+    // 未配置管理员令牌时仅允许本机访问，避免公网裸奔
+    if (adminToken ? !tokenMatches(given, adminToken) : !remoteIsLocal(req)) {
       return rejectToken(res, "未授权");
     }
     if (req.method === "GET") {
-      // apiKey 打码后再下发（provider 与每个模型）
-      const mask = (k) => (k ? k.slice(0, 6) + "***" : "");
-      const safe = {
+      // apiKey 打码后再下发（provider 与每个模型）；模型用归一化结果，兼容旧版单模型配置
+      return json(res, {
         ...cfgNow,
-        provider: { ...cfgNow.provider, apiKey: mask(cfgNow.provider?.apiKey) },
-        models: (cfgNow.models || []).map((m) => ({ ...m, apiKey: mask(m.apiKey) })),
-      };
-      return json(res, safe);
+        provider: { ...(cfgNow.provider || {}), apiKey: maskKey(cfgNow.provider?.apiKey) },
+        models: modelsOf(cfgNow).map((m) => ({
+          id: m.id,
+          model: m.model,
+          baseUrl: m.baseUrl || "",
+          apiKey: maskKey(m.apiKey),
+          enabled: m.enabled,
+        })),
+      });
     }
     if (req.method === "PUT") {
       return readBody(req).then((buf) => {
         let input;
-        try { input = JSON.parse(buf); } catch { return json(res, { ok: false, error: "JSON 解析失败" }); }
+        try { input = JSON.parse(buf); } catch { return json(res, { ok: false, error: "JSON 解析失败" }, false); }
+        if (!input || typeof input !== "object" || Array.isArray(input)) {
+          return json(res, { ok: false, error: "配置格式错误" }, false);
+        }
         const cur = loadConfig();
         const unmask = (sent, real) => (typeof sent === "string" && sent.includes("***") ? real || "" : sent);
         // apiKey 不在前端明文下发：打码值还原原值，新填的明文原样保留
-        if (input.provider) input.provider = { ...input.provider, apiKey: unmask(input.provider.apiKey, cur.provider?.apiKey) };
+        if (input.provider && typeof input.provider === "object") {
+          input.provider = { ...input.provider, apiKey: unmask(input.provider.apiKey, cur.provider?.apiKey) };
+        }
         if (Array.isArray(input.models)) {
-          const curById = new Map((cur.models || []).map((m) => [m.id, m]));
-          const curModels = cur.models || [];
+          const curList = modelsOf(cur);
+          const byId = new Map(curList.map((m) => [m.id, m]));
+          const byModel = new Map();
+          for (const m of curList) {
+            if (!byModel.has(m.model)) byModel.set(m.model, m);
+            else byModel.set(m.model, null); // 同名模型无法区分，不能按名称猜密钥
+          }
+          const missing = [];
           input.models = input.models.map((m, idx) => {
-            // 优先按 id 匹配还原打码 key；用户改了 id 时按索引回退，避免静默清空独立 key
-            const real = curById.get((m.id || "").trim() || m.model) || curModels[idx];
-            return { ...m, apiKey: unmask(m.apiKey, real ? real.apiKey : "") };
+            if (!m || typeof m !== "object") return m;
+            const sent = typeof m.apiKey === "string" ? m.apiKey : "";
+            if (!sent.includes("***")) return { ...m, apiKey: sent };
+            // 只按 id / 模型名还原；对不上时宁可报错让用户重填，也不能按位置套用别人的密钥
+            const key = (typeof m.id === "string" && m.id.trim()) || (typeof m.model === "string" ? m.model.trim() : "");
+            let real = byId.get(key);
+            if (!real && typeof m.model === "string") real = byModel.get(m.model.trim());
+            if (!real) { missing.push(idx + 1); return { ...m, apiKey: "" }; }
+            return { ...m, apiKey: real.apiKey || "" };
           });
+          if (missing.length) {
+            return json(res, {
+              ok: false,
+              error: `第 ${missing.join("、")} 个模型的 API Key 无法对应到原配置（ID 或模型名已改），请重新填写后再保存`,
+            });
+          }
         }
         const result = sanitizeConfig(input);
-        if (!result.ok) return json(res, { ok: false, error: result.error });
+        if (!result.ok) return json(res, { ok: false, error: result.error }, false);
         const next = { ...cur, ...result.cfg };
-        const tmp = path.join(__dirname, "config.json.tmp");
-        fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n");
-        fs.renameSync(tmp, path.join(__dirname, "config.json"));
-        return json(res, { ok: true });
+        // sanitize 删掉了空令牌，但展开 cur 会把旧值带回来，必须显式删除才能吊销
+        if (input.checkToken === "") delete next.checkToken;
+        if (input.adminToken === "") delete next.adminToken;
+        writeConfig(next);
+        try { schedule(); } catch (e) { console.error("reschedule failed:", e); }
+        return json(res, { ok: true }, false);
       }).catch((e) => {
-        res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+        const code = e.message === "body too large" ? 413 : 500;
+        res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ ok: false, error: String(e.message || e) }));
       });
     }

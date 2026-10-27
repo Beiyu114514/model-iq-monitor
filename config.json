@@ -20,7 +20,7 @@
       "enabled": true
     }
   ],
-  "checkToken": "adm-test",
+  "checkToken": "",
   "models": [
     {
       "id": "gpt-4o-mini",

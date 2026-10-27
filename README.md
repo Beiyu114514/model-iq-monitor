@@ -38,6 +38,7 @@
 - 多个问题会每轮依次全部检测；历史区显示 60 根状态条（24 小时视图每根 24 分钟，3 天视图每根 72 分钟）。
 - `intervalMinutes` 同样支持热更新，改完不用重启。
 - **公网部署**：给 `checkToken` 设一个随机字符串，`POST /api/check` 需要带 `?token=xxx`（或 `x-check-token` 头）才会执行，防止别人刷你的 API 额度。面板地址栏加 `?token=xxx` 会自动记住。
+- **后台 `/admin`**：`checkToken` 只能用于触发手动检测，不能进入后台。后台需要 `adminToken`（请求头 `x-admin-token` 或 `?token=`）；未配置 `adminToken` 时仅允许本机访问（带 `X-Forwarded-For` / `Forwarded` 的请求视为非本机，避免同机反代把后台暴露到公网）。仓库里的 `checkToken` 默认为空，公网部署前请自行设置。后台读取的 API Key 一律打码；改了模型 ID 或模型名后若无法对应，保存会提示重新填写 Key，不会套用别的模型的密钥。
 - 数据文件每天自动压缩一次，超过 `retentionDays` 的旧记录会被清理。
 
 2. 启动：

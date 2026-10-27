@@ -30,6 +30,7 @@ for (let i = 431; i >= 0; i--) {
   const wrong = ["日本现任首相是岸田文雄。", "日本现任首相是石破茂。", "抱歉，我无法回答这个问题。"];
   lines.push(JSON.stringify({
     ts,
+    modelId: "gpt-4o-mini",
     questionId: "jp-pm",
     question: "日本现任首相是谁？只回答名字。",
     answer: hit === null ? null : hit ? answers[Math.floor(rand() * answers.length)] : wrong[Math.floor(rand() * wrong.length)],
