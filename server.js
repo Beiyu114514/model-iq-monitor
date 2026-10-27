@@ -2,6 +2,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { loadConfig, runChecks, readRecords, modelsOf } = require("./checker");
 
 const cfg = loadConfig();
@@ -101,11 +102,8 @@ if (process.env.DISABLE_SCHEDULER !== "1") {
 }
 
 // ---------- API ----------
-function json(res, data, cors = true) {
-  res.writeHead(200, {
-    "Content-Type": "application/json; charset=utf-8",
-    ...(cors ? { "Access-Control-Allow-Origin": "*" } : {}),
-  });
+function json(res, data) {
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data));
 }
 
@@ -246,6 +244,23 @@ const maskKey = (k) => {
   return k.slice(0, 4) + "***" + k.slice(-4);
 };
 
+// 常数时间比较令牌，避免公网部署时按响应时间逐位猜 token
+function tokenMatches(given, expected) {
+  if (!expected) return true;
+  if (typeof given !== "string") return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// 校验失败时延迟响应，加大公网暴力猜 token 的成本
+function rejectToken(res, message) {
+  setTimeout(() => {
+    if (!res.headersSent) res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ ok: false, error: message }));
+  }, 500);
+}
+
 function handle(req, res) {
   let url;
   try {
@@ -282,10 +297,7 @@ function handle(req, res) {
     const conf = loadConfig();
     const token = conf.checkToken;
     const given = req.headers["x-check-token"] || url.searchParams.get("token");
-    if (token && given !== token) {
-      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
-      return res.end(JSON.stringify({ ok: false, error: "invalid token" }));
-    }
+    if (token && !tokenMatches(given, token)) return rejectToken(res, "invalid token");
     if (process.env.DISABLE_SCHEDULER === "1") return json(res, { ok: true, demo: true });
     if (!modelsOf(conf).some((m) => m.enabled)) return json(res, { ok: false, error: "没有启用的检测模型" });
     // tick 是 async 的，调用返回的是 Promise；用同步守卫判断是否真的开始
@@ -299,9 +311,8 @@ function handle(req, res) {
     const adminToken = cfgNow.adminToken; // 不再回退到 checkToken：看板令牌不应能改配置
     const given = req.headers["x-admin-token"] || url.searchParams.get("token");
     // 未配置管理员令牌时仅允许本机访问，避免公网裸奔
-    if (adminToken ? given !== adminToken : !remoteIsLocal(req)) {
-      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
-      return res.end(JSON.stringify({ ok: false, error: "未授权" }));
+    if (adminToken ? !tokenMatches(given, adminToken) : !remoteIsLocal(req)) {
+      return rejectToken(res, "未授权");
     }
     if (req.method === "GET") {
       // apiKey 打码后再下发（provider 与每个模型）；模型用归一化结果，兼容旧版单模型配置
@@ -315,7 +326,7 @@ function handle(req, res) {
           apiKey: maskKey(m.apiKey),
           enabled: m.enabled,
         })),
-      }, false);
+      });
     }
     if (req.method === "PUT") {
       return readBody(req).then((buf) => {
@@ -334,7 +345,10 @@ function handle(req, res) {
           const curList = modelsOf(cur);
           const byId = new Map(curList.map((m) => [m.id, m]));
           const byModel = new Map();
-          for (const m of curList) if (!byModel.has(m.model)) byModel.set(m.model, m);
+          for (const m of curList) {
+            if (!byModel.has(m.model)) byModel.set(m.model, m);
+            else byModel.set(m.model, null); // 同名模型无法区分，不能按名称猜密钥
+          }
           const missing = [];
           input.models = input.models.map((m, idx) => {
             if (!m || typeof m !== "object") return m;
@@ -351,7 +365,7 @@ function handle(req, res) {
             return json(res, {
               ok: false,
               error: `第 ${missing.join("、")} 个模型的 API Key 无法对应到原配置（ID 或模型名已改），请重新填写后再保存`,
-            }, false);
+            });
           }
         }
         const result = sanitizeConfig(input);

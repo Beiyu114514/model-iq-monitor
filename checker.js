@@ -42,14 +42,28 @@ function parseLines(text, cutoff) {
   return out;
 }
 
+// 返回已解析条数和「完整行」的字节长度；末尾没写完的半行不计入，避免下次读取时被跳过
 function parseFile(cutoff) {
-  const records = parseLines(fs.readFileSync(FILE, "utf8"), cutoff);
+  const text = fs.readFileSync(FILE, "utf8");
+  const lastNl = text.lastIndexOf("\n");
+  const complete = lastNl >= 0 ? text.slice(0, lastNl + 1) : "";
+  const records = parseLines(complete, cutoff);
   records.sort((a, b) => a.ts - b.ts);
-  return records;
+  return { records, size: Buffer.byteLength(complete) };
 }
 
 // 读取结果缓存：文件没变就不重复解析；只追加时仅解析新增的完整行
-let cache = { ino: -1, size: -1, mtimeMs: -1, days: null, records: null };
+const TAIL_BYTES = 256;
+let cache = { ino: -1, size: -1, mtimeMs: -1, days: null, records: null, tail: Buffer.alloc(0) };
+
+// 读 size 之前的最后一小段字节，用来识别「原地重写」而非追加
+function readTail(fd, size) {
+  const n = Math.min(size, TAIL_BYTES);
+  if (n <= 0) return Buffer.alloc(0);
+  const buf = Buffer.alloc(n);
+  const read = fs.readSync(fd, buf, 0, n, size - n);
+  return buf.subarray(0, read);
+}
 
 function readRecords() {
   if (!fs.existsSync(FILE)) return [];
@@ -61,30 +75,41 @@ function readRecords() {
   const cutoff = Date.now() - days * 86400_000;
   // 常见路径：同一文件只追加了新行，从上次读完的位置继续解析
   if (cache.records && cache.ino === st.ino && cache.days === days && st.size > cache.size) {
-    const len = st.size - cache.size;
-    const buf = Buffer.alloc(len);
-    let chunk;
     const fd = fs.openSync(FILE, "r");
     try {
-      chunk = buf.subarray(0, fs.readSync(fd, buf, 0, len, cache.size));
+      // 文件被原地截断重写时前缀会变，必须整体重读，不能按「追加」处理
+      if (readTail(fd, cache.size).equals(cache.tail)) {
+        const len = st.size - cache.size;
+        const buf = Buffer.alloc(len);
+        const read = fs.readSync(fd, buf, 0, len, cache.size);
+        const text = buf.subarray(0, read).toString("utf8");
+        const lastNl = text.lastIndexOf("\n");
+        if (lastNl >= 0) {
+          const complete = text.slice(0, lastNl + 1);
+          const added = parseLines(complete, cutoff);
+          const lastTs = cache.records.length ? cache.records[cache.records.length - 1].ts : -Infinity;
+          const records = added.length && added[0].ts < lastTs
+            ? cache.records.concat(added).sort((a, b) => a.ts - b.ts)
+            : cache.records.concat(added);
+          const size = cache.size + Buffer.byteLength(complete);
+          cache = { ino: st.ino, size, mtimeMs: st.mtimeMs, days, records, tail: readTail(fd, size) };
+          return records;
+        }
+      }
     } finally {
       fs.closeSync(fd);
     }
-    const text = chunk.toString("utf8");
-    const lastNl = text.lastIndexOf("\n");
-    if (lastNl >= 0) {
-      const complete = text.slice(0, lastNl + 1);
-      const added = parseLines(complete, cutoff);
-      const lastTs = cache.records.length ? cache.records[cache.records.length - 1].ts : -Infinity;
-      const records = added.length && added[0].ts < lastTs
-        ? cache.records.concat(added).sort((a, b) => a.ts - b.ts)
-        : cache.records.concat(added);
-      cache = { ino: st.ino, size: cache.size + Buffer.byteLength(complete), mtimeMs: st.mtimeMs, days, records };
-      return records;
-    }
   }
-  const records = parseFile(cutoff);
-  cache = { ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, days, records };
+  const { records, size } = parseFile(cutoff);
+  const fd = fs.openSync(FILE, "r");
+  let tail;
+  try {
+    tail = readTail(fd, size);
+  } finally {
+    fs.closeSync(fd);
+  }
+  // size 只记到最后一个完整行：没写完的半行留给下次读取
+  cache = { ino: st.ino, size, mtimeMs: st.mtimeMs, days, records, tail };
   return records;
 }
 
@@ -98,7 +123,7 @@ function maybeCompact() {
   try {
     if (!fs.existsSync(FILE)) return;
     const cutoff = now - retentionDaysOf(loadConfig()) * 86400_000;
-    const kept = parseFile(cutoff);
+    const { records: kept } = parseFile(cutoff);
     const tmp = FILE + ".tmp";
     const mode = fs.statSync(FILE).mode & 0o777;
     try {
@@ -109,7 +134,7 @@ function maybeCompact() {
       try { fs.unlinkSync(tmp); } catch {}
       throw e;
     }
-    cache = { ino: -1, size: -1, mtimeMs: -1, days: null, records: null };
+    cache = { ino: -1, size: -1, mtimeMs: -1, days: null, records: null, tail: Buffer.alloc(0) };
   } catch (e) {
     console.error("compact failed:", e); // 压缩失败不影响写入
   }
